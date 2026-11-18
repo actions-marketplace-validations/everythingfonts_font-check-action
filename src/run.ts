@@ -23,7 +23,24 @@ async function changedFilesInPullRequest(token: string): Promise<string[]> {
   return files.filter((file) => file.status !== 'removed').map((file) => file.filename);
 }
 
+let outputsSet = false;
+
+function setOutputs(results: string, failed: boolean): void {
+  core.setOutput('results', results);
+  core.setOutput('failed', String(failed));
+  outputsSet = true;
+}
+
+/** Called when run() throws: makes sure the outputs exist and the job fails. */
+export function handleFailure(error: unknown): void {
+  if (!outputsSet) {
+    setOutputs('[]', true);
+  }
+  core.setFailed(error instanceof Error ? error.message : String(error));
+}
+
 export async function run(): Promise<void> {
+  outputsSet = false;
   const apiKey = core.getInput('api-key');
   if (apiKey === '') {
     core.setOutput('results', '[]');
@@ -68,8 +85,7 @@ export async function run(): Promise<void> {
   }));
   const decision = decide(shown, { failBelow, failOn, failOnQuota, timeoutMinutes });
   annotate(shown);
-  core.setOutput('results', JSON.stringify(summarize(shown)));
-  core.setOutput('failed', String(decision.failed));
+  setOutputs(JSON.stringify(summarize(shown)), decision.failed);
 
   const markdown = markdownReport(shown, decision, { allowance: latest.allowance });
   await core.summary.addRaw(markdown, true).write();

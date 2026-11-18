@@ -33,7 +33,7 @@ inputs:
     required: false
     default: 'false'
   github-token:
-    description: Token used to list the files changed in a pull request.
+    description: Token used to list the files changed in a pull request and to post the results comment (needs pull-requests: write for the comment).
     required: false
     default: ${{ github.token }}
   api-url:

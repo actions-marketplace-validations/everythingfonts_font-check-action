@@ -70,44 +70,112 @@ describe('summarize', () => {
 
 describe('upsertComment', () => {
   const target = { owner: 'o', repo: 'r', issue_number: 7 };
-  const makeOctokit = (comments: Array<{ id: number; body: string }>) => {
+  type C = { id: number; body: string; user: { type: string } };
+  const bot = (id: number, body: string): C => ({ id, body, user: { type: 'Bot' } });
+  const makeOctokit = (pages: C[][]) => {
     const createComment = vi.fn(async () => ({}));
     const updateComment = vi.fn(async () => ({}));
-    return {
-      createComment,
-      updateComment,
-      octokit: {
-        rest: { issues: { listComments: vi.fn(), createComment, updateComment } },
-        paginate: vi.fn(async () => comments),
-      } as never,
-    };
+    const listComments = vi.fn(async ({ page }: { page: number }) => ({ data: pages[page - 1] ?? [] }));
+    return { createComment, updateComment, listComments, octokit: { rest: { issues: { listComments, createComment, updateComment } } } as never };
   };
 
-  it('updates an existing marked comment', async () => {
-    const { octokit, updateComment, createComment } = makeOctokit([
-      { id: 1, body: 'unrelated' },
-      { id: 2, body: `${COMMENT_MARKER}\nold` },
-    ]);
+  it('updates an existing bot-authored marked comment', async () => {
+    const { octokit, updateComment, createComment } = makeOctokit([[bot(1, 'unrelated'), bot(2, `${COMMENT_MARKER}\nold`), bot(3, `${COMMENT_MARKER}`)]]);
     await upsertComment(octokit, target, 'new');
 
     expect(updateComment).toHaveBeenCalledWith({ owner: 'o', repo: 'r', comment_id: 2, body: 'new' });
     expect(createComment).not.toHaveBeenCalled();
   });
 
-  it('creates a comment when none is marked', async () => {
-    const { octokit, updateComment, createComment } = makeOctokit([{ id: 1, body: 'unrelated' }]);
+  it('ignores a marker comment written by a human and creates its own', async () => {
+    const { octokit, updateComment, createComment } = makeOctokit([[{ id: 1, body: COMMENT_MARKER, user: { type: 'User' } }]]);
     await upsertComment(octokit, target, 'new');
 
     expect(createComment).toHaveBeenCalledWith({ ...target, body: 'new' });
     expect(updateComment).not.toHaveBeenCalled();
   });
 
-  it('warns instead of throwing on 403', async () => {
+  it('finds the comment on a later page', async () => {
+    const filler = Array.from({ length: 100 }, (_, i) => bot(i + 10, 'x'));
+    const { octokit, updateComment, listComments } = makeOctokit([filler, [bot(500, COMMENT_MARKER)]]);
+    await upsertComment(octokit, target, 'new');
+
+    expect(listComments).toHaveBeenCalledTimes(2);
+    expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 500 }));
+  });
+
+  it.each([403, 404, 422, 500])('warns instead of throwing on %i', async (status) => {
     const { octokit, createComment } = makeOctokit([]);
-    createComment.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { status: 403 }));
+    createComment.mockRejectedValueOnce(Object.assign(new Error('secret detail'), { status }));
 
     await expect(upsertComment(octokit, target, 'new')).resolves.toBeUndefined();
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('pull-requests: write'));
+    expect(core.warning).toHaveBeenCalledWith(expect.not.stringContaining('secret detail'));
+  });
+
+  it('warns when listing fails', async () => {
+    const { octokit, listComments } = makeOctokit([]);
+    listComments.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(upsertComment(octokit, target, 'new')).resolves.toBeUndefined();
+    expect(core.warning).toHaveBeenCalled();
+  });
+});
+
+describe('markdown safety', () => {
+  it('neutralises hostile file names, titles and urls', () => {
+    const hostile: FontResult = {
+      file: 'a|b`c\n@user.ttf',
+      ok: true,
+      inspection: {
+        id: 'i',
+        status: 'succeeded',
+        score: 50,
+        band: 'needs-attention',
+        counts: { error: 1, warning: 0, info: 0, pass: 0 },
+        findings: [{ code: 'x', severity: 'error', category: 'c', title: '[x](http://evil) @user <img src=x> | **b**' }],
+        report_url: 'javascript:alert(1)',
+      },
+    };
+    const md = markdownReport([hostile, { ...ok('b.ttf', 'healthy', 90), inspection: { ...ok('b.ttf', 'healthy', 90).inspection!, report_url: 'http://insecure.test/r' } } as never], {
+      failed: true,
+      reasons: ['a|b`c\n@user.ttf: 1 error'],
+    });
+
+    expect(md).not.toContain('](http://evil)');
+    expect(md).toContain('\\[x\\]\\(http://evil\\)');
+    expect(md).not.toMatch(/@user/);
+    expect(md).not.toMatch(/(?<!\\)<img/);
+    expect(md).toContain('`a\\|b c @\u200Duser.ttf`');
+    expect(md).not.toContain('javascript:');
+    expect(md).not.toContain('http://insecure.test');
+    expect(md).not.toContain('[full report]');
+  });
+
+  it('encodes parentheses in an https report url', () => {
+    const md = markdownReport([{ ...ok('a.ttf', 'healthy', 90) }].map((r) => ({ ...r, inspection: { ...(r as never as { inspection: object }).inspection, report_url: 'https://e.test/r(1)' } })) as never, decision);
+    expect(md).toContain('(https://e.test/r%281%29)');
+  });
+
+  it('caps the body at a line boundary and keeps marker and footer', () => {
+    const many = Array.from({ length: 2000 }, (_, i) => ok(`font-${i}.ttf`, 'healthy', 90));
+    const md = markdownReport(many, decision);
+
+    expect(md.length).toBeLessThanOrEqual(60000);
+    expect(md).toContain(COMMENT_MARKER);
+    expect(md).toMatch(/… \d+ more fonts not shown — see the job log/);
+    expect(md).toContain('everythingfonts.com');
+    expect(md.endsWith('\n')).toBe(true);
+  });
+});
+
+describe('annotate caps', () => {
+  it('emits at most 10 per severity then one notice', () => {
+    const many: FontResult[] = Array.from({ length: 15 }, (_, i) => ok(`f${i}.ttf`, 'unhealthy', 10));
+    annotate(many);
+
+    expect(core.error).toHaveBeenCalledTimes(10);
+    expect(core.warning).toHaveBeenCalledTimes(10);
+    expect(core.notice).toHaveBeenCalledWith('15 more findings \u2014 see the job summary');
   });
 });
 

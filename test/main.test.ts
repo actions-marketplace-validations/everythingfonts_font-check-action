@@ -32,7 +32,7 @@ vi.mock('../src/api', async (importOriginal) => ({
 }));
 vi.mock('../src/fonts', () => ({ findFonts: vi.fn(async () => ['/ws/a.ttf', '/ws/b.ttf']) }));
 
-import { run } from '../src/run';
+import { handleFailure, run } from '../src/run';
 
 const setInputs = (inputs: Record<string, string>): void => {
   vi.mocked(core.getInput).mockImplementation((name: string) => inputs[name] ?? '');
@@ -91,8 +91,7 @@ describe('run', () => {
   it('posts the PR comment on a pull request and skips it when comment is false', async () => {
     const createComment = vi.fn(async (_params: { body: string }) => ({}));
     vi.mocked(github.getOctokit).mockReturnValue({
-      rest: { issues: { listComments: vi.fn(), createComment, updateComment: vi.fn() } },
-      paginate: vi.fn(async () => []),
+      rest: { issues: { listComments: vi.fn(async () => ({ data: [] })), createComment, updateComment: vi.fn() } },
     } as never);
     Object.assign(github.context, { eventName: 'pull_request', payload: { pull_request: { number: 5 } } });
     setInputs({ 'api-key': 'k', 'changed-only': 'false', 'github-token': 't', 'api-url': 'https://x' });
@@ -105,5 +104,16 @@ describe('run', () => {
     setInputs({ 'api-key': 'k', 'changed-only': 'false', comment: 'false', 'github-token': 't', 'api-url': 'https://x' });
     await run();
     expect(createComment).not.toHaveBeenCalled();
+  });
+
+  it('sets empty results and failed=true when the run throws', async () => {
+    setInputs({ 'api-key': 'k', 'api-url': 'https://x', 'changed-only': 'false' });
+    apiMock.uploadFont.mockRejectedValue(new EfApiError('down', { status: 503 }));
+    const error = await run().catch((e: unknown) => e);
+    handleFailure(error);
+
+    expect(core.setOutput).toHaveBeenCalledWith('results', '[]');
+    expect(core.setOutput).toHaveBeenCalledWith('failed', 'true');
+    expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining('down'));
   });
 });
