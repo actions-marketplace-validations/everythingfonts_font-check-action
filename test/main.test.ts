@@ -32,6 +32,7 @@ vi.mock('../src/api', async (importOriginal) => ({
 }));
 vi.mock('../src/fonts', () => ({ findFonts: vi.fn(async () => ['/ws/a.ttf', '/ws/b.ttf']) }));
 
+import { findFonts } from '../src/fonts';
 import { handleFailure, run } from '../src/run';
 
 const setInputs = (inputs: Record<string, string>): void => {
@@ -104,6 +105,25 @@ describe('run', () => {
     setInputs({ 'api-key': 'k', 'changed-only': 'false', comment: 'false', 'github-token': 't', 'api-url': 'https://x' });
     await run();
     expect(createComment).not.toHaveBeenCalled();
+  });
+
+  it('warns and checks every matched font when the pull request files cannot be listed', async () => {
+    vi.mocked(github.getOctokit).mockReturnValue({
+      paginate: vi.fn(async () => {
+        throw new Error('Resource not accessible by integration');
+      }),
+      rest: { pulls: { listFiles: vi.fn() }, issues: { listComments: vi.fn(async () => ({ data: [] })), createComment: vi.fn(), updateComment: vi.fn() } },
+    } as never);
+    Object.assign(github.context, { eventName: 'pull_request', payload: { pull_request: { number: 5 } } });
+    setInputs({ 'api-key': 'k', 'github-token': 't', 'api-url': 'https://x' });
+    await run();
+
+    expect(core.warning).toHaveBeenCalledWith(
+      "Could not list the pull request's files \u2014 checking all matched fonts. (Resource not accessible by integration)",
+    );
+    expect(findFonts).toHaveBeenCalledWith(expect.objectContaining({ changedOnly: false }));
+    expect(apiMock.uploadFont).toHaveBeenCalledTimes(2);
+    expect(core.setFailed).not.toHaveBeenCalled();
   });
 
   it('falls back to the default api-url when the input is empty', async () => {

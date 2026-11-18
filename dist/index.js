@@ -42040,10 +42040,13 @@ function parseApiUrl(value) {
 
 
 
+/** changed-only was asked for where it cannot work: a configuration error, not a GitHub API failure. */
+class ChangedOnlyConfigError extends Error {
+}
 async function changedFilesInPullRequest(token) {
     const pullNumber = github_context.payload.pull_request?.number;
     if (!token || pullNumber === undefined) {
-        throw new Error('changed-only needs github-token and a pull request payload to list the changed files.');
+        throw new ChangedOnlyConfigError('changed-only needs github-token and a pull request payload to list the changed files.');
     }
     const octokit = getOctokit(token);
     const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
@@ -42086,8 +42089,22 @@ async function run() {
     const timeoutMinutes = parseTimeoutMinutes(getInput('timeout-minutes'));
     const timeoutMs = timeoutMinutes * 60000;
     debug(`changed-only=${changedOnly} comment=${comment}`);
-    const changedFiles = changedOnly ? await changedFilesInPullRequest(getInput('github-token')) : undefined;
-    const files = await findFonts({ patterns: getInput('paths'), changedOnly, changedFiles });
+    let changedFiles;
+    let onlyChanged = changedOnly;
+    if (changedOnly) {
+        try {
+            changedFiles = await changedFilesInPullRequest(getInput('github-token'));
+        }
+        catch (error) {
+            if (error instanceof ChangedOnlyConfigError) {
+                throw error;
+            }
+            const reason = error instanceof Error ? error.message : String(error);
+            warning(`Could not list the pull request's files \u2014 checking all matched fonts. (${reason})`);
+            onlyChanged = false;
+        }
+    }
+    const files = await findFonts({ patterns: getInput('paths'), changedOnly: onlyChanged, changedFiles });
     if (files.length === 0) {
         info('No fonts to check');
         setOutput('results', '[]');
