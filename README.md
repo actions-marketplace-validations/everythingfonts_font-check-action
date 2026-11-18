@@ -29,7 +29,7 @@ jobs:
   font-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: everythingfonts/font-check-action@v1
         with:
           api-key: ${{ secrets.EVERYTHINGFONTS_CI_KEY }}
