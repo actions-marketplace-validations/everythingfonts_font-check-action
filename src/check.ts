@@ -1,4 +1,4 @@
-import { EfApiError, type EfApi, type Inspection } from './api';
+import { EfApiError, type Allowance, type EfApi, type Inspection } from './api';
 
 export type FontResult =
   | { file: string; ok: true; inspection: Inspection }
@@ -35,7 +35,11 @@ const isOutage = (error: unknown): error is EfApiError =>
   error instanceof EfApiError && (error.status === 0 || error.status >= 500);
 
 /** Checks the fonts one at a time; a quota error skips the rest, an outage throws. */
-export async function runChecks(api: EfApi, files: string[], opts: { timeoutMs: number }): Promise<FontResult[]> {
+export async function runChecks(
+  api: EfApi,
+  files: string[],
+  opts: { timeoutMs: number; onAllowance?: (allowance: Allowance) => void },
+): Promise<FontResult[]> {
   const deadline = Date.now() + opts.timeoutMs;
   const results: FontResult[] = [];
 
@@ -49,6 +53,9 @@ export async function runChecks(api: EfApi, files: string[], opts: { timeoutMs: 
     try {
       const fontId = await api.uploadFont(file);
       const started = await api.inspect(fontId);
+      if (started.allowance) {
+        opts.onAllowance?.(started.allowance);
+      }
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         throw new Error(TIMED_OUT_WAITING);
@@ -76,6 +83,9 @@ export async function runChecks(api: EfApi, files: string[], opts: { timeoutMs: 
             ? error.message
             : String(error);
       if (error instanceof EfApiError && error.isQuota()) {
+        if (error.allowance) {
+          opts.onAllowance?.(error.allowance);
+        }
         results.push({ file, ok: false, error: message, quota: true });
         for (const skipped of files.slice(index + 1)) {
           results.push({ file: skipped, ok: false, error: 'Skipped: API allowance used up.', quota: true, skipped: 'quota' });

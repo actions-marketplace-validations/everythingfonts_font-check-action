@@ -30968,7 +30968,7 @@ const _summary = new Summary();
  * @deprecated use `core.summary`
  */
 const markdownSummary = (/* unused pure expression or super */ null && (_summary));
-const summary = (/* unused pure expression or super */ null && (_summary));
+const summary = _summary;
 //# sourceMappingURL=summary.js.map
 ;// CONCATENATED MODULE: ./node_modules/@actions/core/lib/path-utils.js
 
@@ -37775,6 +37775,9 @@ async function runChecks(api, files, opts) {
         try {
             const fontId = await api.uploadFont(file);
             const started = await api.inspect(fontId);
+            if (started.allowance) {
+                opts.onAllowance?.(started.allowance);
+            }
             const remaining = deadline - Date.now();
             if (remaining <= 0) {
                 throw new Error(TIMED_OUT_WAITING);
@@ -37803,6 +37806,9 @@ async function runChecks(api, files, opts) {
                     ? error.message
                     : String(error);
             if (error instanceof EfApiError && error.isQuota()) {
+                if (error.allowance) {
+                    opts.onAllowance?.(error.allowance);
+                }
                 results.push({ file, ok: false, error: message, quota: true });
                 for (const skipped of files.slice(index + 1)) {
                     results.push({ file: skipped, ok: false, error: 'Skipped: API allowance used up.', quota: true, skipped: 'quota' });
@@ -41643,6 +41649,132 @@ async function findFonts(options) {
     return matches.filter((match) => changed.has((0,external_node_path_namespaceObject.relative)(workspace, match)));
 }
 
+;// CONCATENATED MODULE: ./src/report.ts
+
+const COMMENT_MARKER = '<!-- everythingfonts-font-check -->';
+const BAND_EMOJI = {
+    healthy: '✅',
+    'needs-attention': '⚠️',
+    unhealthy: '❌',
+};
+const TOP_FINDINGS = 5;
+const escapeCell = (text) => text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+/** The `results` output: one plain object per font. */
+function summarize(results) {
+    return results.map((result) => {
+        if (!result.ok) {
+            return { file: result.file, score: null, band: null, counts: null, report_url: null, error: result.error };
+        }
+        const { inspection } = result;
+        return {
+            file: result.file,
+            score: inspection.score ?? null,
+            band: inspection.band ?? null,
+            counts: inspection.counts ?? null,
+            report_url: inspection.report_url ?? null,
+        };
+    });
+}
+function reportLink(url, reportBase) {
+    if (url) {
+        return `[full report](${url})`;
+    }
+    return reportBase ? `[full report](${reportBase})` : '';
+}
+/** Markdown for the PR comment and the job summary. */
+function markdownReport(results, decision, options = {}) {
+    const lines = [COMMENT_MARKER, '## Font Check', ''];
+    lines.push(decision.failed ? '**Result: failed**' : '**Result: passed**', '');
+    for (const reason of decision.reasons) {
+        lines.push(`- ${escapeCell(reason)}`);
+    }
+    if (decision.reasons.length > 0) {
+        lines.push('');
+    }
+    lines.push('| Font | Score | Health | Errors | Warnings | Info | Report |', '| --- | ---: | :---: | ---: | ---: | ---: | --- |');
+    for (const result of results) {
+        const file = `\`${result.file.replace(/`/g, '')}\``;
+        if (!result.ok) {
+            const label = result.skipped === 'timeout' ? 'timed out' : result.skipped === 'quota' ? 'skipped (allowance)' : 'not checked';
+            lines.push(`| ${file} | - | ${label} | - | - | - | |`);
+            continue;
+        }
+        const { inspection } = result;
+        const band = inspection.band ?? '';
+        const emoji = BAND_EMOJI[band] ?? '';
+        lines.push(`| ${file} | ${inspection.score ?? '-'} | ${emoji} ${band} | ${inspection.counts?.error ?? 0} | ${inspection.counts?.warning ?? 0} | ${inspection.counts?.info ?? 0} | ${reportLink(inspection.report_url, options.reportBase)} |`);
+    }
+    lines.push('');
+    for (const result of results) {
+        if (!result.ok) {
+            lines.push(`**\`${result.file}\`**: ${escapeCell(result.error)}`, '');
+            continue;
+        }
+        const findings = (result.inspection.findings ?? []).filter((finding) => finding.severity !== 'pass').slice(0, TOP_FINDINGS);
+        if (findings.length === 0) {
+            continue;
+        }
+        lines.push(`**\`${result.file}\`** top findings`, '');
+        for (const finding of findings) {
+            lines.push(`- ${finding.severity}: ${escapeCell(finding.title)}`);
+        }
+        lines.push('');
+    }
+    lines.push('---', 'Full report, every finding and one-click fixes: [everythingfonts.com](https://everythingfonts.com)');
+    const allowance = options.allowance;
+    if (allowance) {
+        lines.push('', `${allowance.remaining} of ${allowance.limit} free checks left this month`);
+    }
+    return lines.join('\n') + '\n';
+}
+/** Updates the marked comment or creates it; a missing permission only warns. */
+async function upsertComment(octokit, target, body) {
+    try {
+        const comments = await octokit.paginate(octokit.rest.issues.listComments, { ...target, per_page: 100 });
+        const existing = comments.find((comment) => comment.body?.includes(COMMENT_MARKER));
+        if (existing) {
+            await octokit.rest.issues.updateComment({ owner: target.owner, repo: target.repo, comment_id: existing.id, body });
+        }
+        else {
+            await octokit.rest.issues.createComment({ ...target, body });
+        }
+    }
+    catch (error) {
+        const status = error.status;
+        if (status === 403) {
+            warning('Could not post the Font Check comment: the token needs "pull-requests: write" permission.');
+            return;
+        }
+        throw error;
+    }
+}
+/** One annotation per finding (title only), plus refused and skipped fonts. */
+function annotate(results) {
+    for (const result of results) {
+        const properties = { file: result.file };
+        if (!result.ok) {
+            if (result.quota || result.skipped === 'timeout') {
+                warning(`${result.file}: ${result.error}`, properties);
+            }
+            else {
+                error(`${result.file}: ${result.error}`, properties);
+            }
+            continue;
+        }
+        for (const finding of result.inspection.findings ?? []) {
+            if (finding.severity === 'error') {
+                error(finding.title, properties);
+            }
+            else if (finding.severity === 'warning') {
+                warning(finding.title, properties);
+            }
+            else if (finding.severity === 'info') {
+                notice(finding.title, properties);
+            }
+        }
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/inputs.ts
 /** An explicit 'true'/'false' wins; empty falls back to `fallback`. */
 function resolveToggle(name, value, fallback) {
@@ -41682,7 +41814,8 @@ function parseTimeoutMinutes(value) {
     return minutes;
 }
 
-;// CONCATENATED MODULE: ./src/main.ts
+;// CONCATENATED MODULE: ./src/run.ts
+
 
 
 
@@ -41715,7 +41848,6 @@ async function run() {
     core_setSecret(apiKey);
     const isPullRequest = isPullRequestEvent(github_context.eventName);
     const changedOnly = resolveToggle('changed-only', getInput('changed-only'), isPullRequest);
-    // Resolved here for the PR comment step (Task 3); not used yet.
     const comment = resolveToggle('comment', getInput('comment'), isPullRequest);
     const failOn = parseFailOn(getInput('fail-on'));
     const failBelow = parseFailBelow(getInput('fail-below'));
@@ -41737,30 +41869,34 @@ async function run() {
         client: `github-action/font-check@${package_namespaceObject.rE}`,
         repo: process.env.GITHUB_REPOSITORY,
     });
-    const results = await runChecks(api, files, { timeoutMs });
+    const latest = { allowance: null };
+    const results = await runChecks(api, files, { timeoutMs, onAllowance: (value) => (latest.allowance = value) });
     const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
     const shown = results.map((result) => ({
         ...result,
         file: (0,external_node_path_namespaceObject.relative)(workspace, result.file).split('\\').join('/'),
     }));
-    for (const result of shown) {
-        if (result.ok) {
-            info(`${result.file}: score ${result.inspection.score ?? 'n/a'} (${result.inspection.band ?? 'unknown'})`);
-        }
-        else if (result.quota || result.skipped === 'timeout') {
-            warning(`${result.file}: ${result.error}`, { file: result.file });
-        }
-        else {
-            error(`${result.file}: ${result.error}`, { file: result.file });
+    const decision = decide(shown, { failBelow, failOn, failOnQuota, timeoutMinutes });
+    annotate(shown);
+    setOutput('results', JSON.stringify(summarize(shown)));
+    setOutput('failed', String(decision.failed));
+    const markdown = markdownReport(shown, decision, { allowance: latest.allowance });
+    await summary.addRaw(markdown, true).write();
+    const pullNumber = github_context.payload.pull_request?.number;
+    if (comment && pullNumber !== undefined) {
+        const token = getInput('github-token');
+        if (token) {
+            await upsertComment(getOctokit(token), { ...github_context.repo, issue_number: pullNumber }, markdown);
         }
     }
-    const decision = decide(shown, { failBelow, failOn, failOnQuota, timeoutMinutes });
-    setOutput('results', JSON.stringify(shown));
-    setOutput('failed', String(decision.failed));
     if (decision.failed) {
         setFailed(`Font Check failed:\n${decision.reasons.join('\n')}`);
     }
 }
+
+;// CONCATENATED MODULE: ./src/main.ts
+
+
 run().catch((error) => {
     setFailed(error instanceof Error ? error.message : String(error));
 });
