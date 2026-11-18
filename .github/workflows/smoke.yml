@@ -1,0 +1,44 @@
+name: Smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      api-url:
+        description: Base URL of the Everything Fonts API
+        required: false
+        default: https://font.rest/api/v1
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Font Check on the fixture font
+        id: check
+        uses: ./
+        with:
+          api-key: ${{ secrets.EVERYTHINGFONTS_CI_KEY }}
+          paths: test/fixtures/*.ttf
+          changed-only: 'false'
+          comment: 'false'
+          api-url: ${{ inputs.api-url }}
+
+      - name: Verify the outputs
+        env:
+          FAILED: ${{ steps.check.outputs.failed }}
+          RESULTS: ${{ steps.check.outputs.results }}
+        run: |
+          echo "failed=$FAILED"
+          echo "$RESULTS" | jq .
+          if [ "$FAILED" != "false" ]; then
+            echo "::error::Font Check reported failed=$FAILED"
+            exit 1
+          fi
+          if ! echo "$RESULTS" | jq -e 'length > 0 and all(.[]; .score != null)' > /dev/null; then
+            echo "::error::results is empty or lacks a score"
+            exit 1
+          fi
