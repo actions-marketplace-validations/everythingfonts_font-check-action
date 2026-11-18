@@ -30,6 +30,7 @@ describe('expandBraces', () => {
   it('expands brace groups, including several and nested ones', () => {
     expect(expandBraces('**/*.{ttf,otf}')).toEqual(['**/*.ttf', '**/*.otf']);
     expect(expandBraces('{a,b}/*.{x,y}')).toEqual(['a/*.x', 'a/*.y', 'b/*.x', 'b/*.y']);
+    expect(expandBraces('{a}/*.{x,y}')).toEqual(['{a}/*.x', '{a}/*.y']);
     expect(expandBraces('plain/*.ttf')).toEqual(['plain/*.ttf']);
   });
 });

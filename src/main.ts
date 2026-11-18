@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { relative } from 'node:path';
 import * as github from '@actions/github';
 import pkg from '../package.json';
 import { EfApi } from './api';
@@ -37,7 +38,8 @@ async function run(): Promise<void> {
   const failOn = parseFailOn(core.getInput('fail-on'));
   const failBelow = parseFailBelow(core.getInput('fail-below'));
   const failOnQuota = resolveToggle('fail-on-quota', core.getInput('fail-on-quota'), false);
-  const timeoutMs = parseTimeoutMinutes(core.getInput('timeout-minutes')) * 60000;
+  const timeoutMinutes = parseTimeoutMinutes(core.getInput('timeout-minutes'));
+  const timeoutMs = timeoutMinutes * 60000;
   core.debug(`changed-only=${changedOnly} comment=${comment}`);
 
   const changedFiles = changedOnly ? await changedFilesInPullRequest(core.getInput('github-token')) : undefined;
@@ -60,19 +62,19 @@ async function run(): Promise<void> {
   const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
   const shown: FontResult[] = results.map((result) => ({
     ...result,
-    file: result.file.startsWith(workspace + '/') ? result.file.slice(workspace.length + 1) : result.file,
+    file: relative(workspace, result.file).split('\\').join('/'),
   }));
   for (const result of shown) {
     if (result.ok) {
       core.info(`${result.file}: score ${result.inspection.score ?? 'n/a'} (${result.inspection.band ?? 'unknown'})`);
-    } else if (result.quota) {
+    } else if (result.quota || result.skipped === 'timeout') {
       core.warning(`${result.file}: ${result.error}`, { file: result.file });
     } else {
       core.error(`${result.file}: ${result.error}`, { file: result.file });
     }
   }
 
-  const decision = decide(shown, { failBelow, failOn, failOnQuota });
+  const decision = decide(shown, { failBelow, failOn, failOnQuota, timeoutMinutes });
   core.setOutput('results', JSON.stringify(shown));
   core.setOutput('failed', String(decision.failed));
   if (decision.failed) {

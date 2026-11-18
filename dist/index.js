@@ -32517,6 +32517,8 @@ function getIDToken(aud) {
  */
 
 //# sourceMappingURL=core.js.map
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = require("node:path");
 ;// CONCATENATED MODULE: ./node_modules/@actions/github/lib/context.js
 
 
@@ -37521,8 +37523,6 @@ const package_namespaceObject = {"rE":"1.0.0"};
 var external_node_crypto_ = __nccwpck_require__(7598);
 ;// CONCATENATED MODULE: external "node:fs/promises"
 const promises_namespaceObject = require("node:fs/promises");
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = require("node:path");
 ;// CONCATENATED MODULE: ./src/api.ts
 
 
@@ -37746,17 +37746,40 @@ class EfApi {
 
 ;// CONCATENATED MODULE: ./src/check.ts
 
+const TIMED_OUT_WAITING = 'Timed out waiting for the result.';
 const RETRY_HINT = 'The Everything Fonts API is unavailable; try again in a few minutes.';
+const KEY_REJECTED_HINT = 'Check the api-key secret (EVERYTHINGFONTS_CI_KEY) \u2014 a CI key can only upload fonts and run health checks.';
+/** The API refused the key; every later request would fail the same way. */
+class ApiKeyRejectedError extends Error {
+    status;
+    constructor(status) {
+        super(`Everything Fonts rejected the API key (HTTP ${status}). ${KEY_REJECTED_HINT}`);
+        this.status = status;
+        this.name = 'ApiKeyRejectedError';
+    }
+}
+const isKeyRejected = (error) => error instanceof EfApiError && (error.status === 401 || (error.status === 403 && !error.isQuota()));
+const isPlainRateLimit = (error) => error instanceof EfApiError && error.status === 429 && !error.isQuota();
 const isOutage = (error) => error instanceof EfApiError && (error.status === 0 || error.status >= 500);
 /** Checks the fonts one at a time; a quota error skips the rest, an outage throws. */
 async function runChecks(api, files, opts) {
     const deadline = Date.now() + opts.timeoutMs;
     const results = [];
     for (const [index, file] of files.entries()) {
+        if (Date.now() >= deadline) {
+            for (const skipped of files.slice(index)) {
+                results.push({ file: skipped, ok: false, error: 'Skipped: timed out before this font was checked.', skipped: 'timeout' });
+            }
+            return results;
+        }
         try {
             const fontId = await api.uploadFont(file);
             const started = await api.inspect(fontId);
-            const inspection = await api.waitForInspection(started.id, { timeoutMs: Math.max(1, deadline - Date.now()) });
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) {
+                throw new Error(TIMED_OUT_WAITING);
+            }
+            const inspection = await api.waitForInspection(started.id, { timeoutMs: remaining });
             if (inspection.status === 'succeeded') {
                 results.push({ file, ok: true, inspection });
             }
@@ -37765,10 +37788,20 @@ async function runChecks(api, files, opts) {
             }
         }
         catch (error) {
+            if (isKeyRejected(error)) {
+                throw new ApiKeyRejectedError(error.status);
+            }
+            if (isPlainRateLimit(error)) {
+                throw new Error(`Rate limited by Everything Fonts \u2014 try again shortly. ${error.message}`);
+            }
             if (isOutage(error)) {
                 throw new Error(`${error.message} ${RETRY_HINT}`);
             }
-            const message = error instanceof Error ? error.message : String(error);
+            const message = error instanceof Error && /^Timed out waiting for inspection/.test(error.message)
+                ? TIMED_OUT_WAITING
+                : error instanceof Error
+                    ? error.message
+                    : String(error);
             if (error instanceof EfApiError && error.isQuota()) {
                 results.push({ file, ok: false, error: message, quota: true });
                 for (const skipped of files.slice(index + 1)) {
@@ -37784,8 +37817,16 @@ async function runChecks(api, files, opts) {
 /** Decides whether the job fails; `fail-on` reads `counts`, never the findings list. */
 function decide(results, options) {
     const reasons = [];
+    const timedOut = results.filter((result) => !result.ok && result.skipped === 'timeout').length;
+    if (timedOut > 0) {
+        const minutes = options.timeoutMinutes === undefined ? '' : ` ${options.timeoutMinutes} minute(s)`;
+        reasons.push(`Timed out after${minutes || ' the time limit'}; ${timedOut} font${timedOut === 1 ? '' : 's'} not checked`);
+    }
     for (const result of results) {
         if (!result.ok) {
+            if (result.skipped === 'timeout') {
+                continue;
+            }
             if (!result.quota || options.failOnQuota) {
                 reasons.push(`${result.file}: ${result.error}`);
             }
@@ -41568,8 +41609,12 @@ function expandBraces(pattern) {
             commas.push(i);
         }
     }
-    if (close === -1 || commas.length === 0) {
+    if (close === -1) {
         return [pattern];
+    }
+    if (commas.length === 0) {
+        const literal = pattern.slice(0, close + 1);
+        return expandBraces(pattern.slice(close + 1)).map((rest) => literal + rest);
     }
     const bounds = [open, ...commas, close];
     const head = pattern.slice(0, open);
@@ -41645,6 +41690,7 @@ function parseTimeoutMinutes(value) {
 
 
 
+
 async function changedFilesInPullRequest(token) {
     const pullNumber = github_context.payload.pull_request?.number;
     if (!token || pullNumber === undefined) {
@@ -41674,7 +41720,8 @@ async function run() {
     const failOn = parseFailOn(getInput('fail-on'));
     const failBelow = parseFailBelow(getInput('fail-below'));
     const failOnQuota = resolveToggle('fail-on-quota', getInput('fail-on-quota'), false);
-    const timeoutMs = parseTimeoutMinutes(getInput('timeout-minutes')) * 60000;
+    const timeoutMinutes = parseTimeoutMinutes(getInput('timeout-minutes'));
+    const timeoutMs = timeoutMinutes * 60000;
     core_debug(`changed-only=${changedOnly} comment=${comment}`);
     const changedFiles = changedOnly ? await changedFilesInPullRequest(getInput('github-token')) : undefined;
     const files = await findFonts({ patterns: getInput('paths'), changedOnly, changedFiles });
@@ -41694,20 +41741,20 @@ async function run() {
     const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
     const shown = results.map((result) => ({
         ...result,
-        file: result.file.startsWith(workspace + '/') ? result.file.slice(workspace.length + 1) : result.file,
+        file: (0,external_node_path_namespaceObject.relative)(workspace, result.file).split('\\').join('/'),
     }));
     for (const result of shown) {
         if (result.ok) {
             info(`${result.file}: score ${result.inspection.score ?? 'n/a'} (${result.inspection.band ?? 'unknown'})`);
         }
-        else if (result.quota) {
+        else if (result.quota || result.skipped === 'timeout') {
             warning(`${result.file}: ${result.error}`, { file: result.file });
         }
         else {
             error(`${result.file}: ${result.error}`, { file: result.file });
         }
     }
-    const decision = decide(shown, { failBelow, failOn, failOnQuota });
+    const decision = decide(shown, { failBelow, failOn, failOnQuota, timeoutMinutes });
     setOutput('results', JSON.stringify(shown));
     setOutput('failed', String(decision.failed));
     if (decision.failed) {

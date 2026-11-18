@@ -55,8 +55,12 @@ export function expandBraces(pattern: string): string[] {
       commas.push(i);
     }
   }
-  if (close === -1 || commas.length === 0) {
+  if (close === -1) {
     return [pattern];
+  }
+  if (commas.length === 0) {
+    const literal = pattern.slice(0, close + 1);
+    return expandBraces(pattern.slice(close + 1)).map((rest) => literal + rest);
   }
   const bounds = [open, ...commas, close];
   const head = pattern.slice(0, open);
