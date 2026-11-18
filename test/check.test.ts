@@ -1,3 +1,6 @@
+import { mkdtempSync, truncateSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { EfApiError, type EfApi, type Inspection } from '../src/api';
 import { ApiKeyRejectedError, decide, runChecks, type FontResult } from '../src/check';
@@ -39,6 +42,40 @@ describe('runChecks', () => {
     expect(results.map((r) => r.ok)).toEqual([true, false, true]);
     expect(results[1]).toMatchObject({ file: 'b.ttf', ok: false, error: 'too big' });
     expect(results[1]).not.toHaveProperty('quota');
+  });
+
+  it('skips a font over the 10 MB CI-key cap without uploading it, as a quota warning', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ef-size-'));
+    const big = join(dir, 'Big.ttf');
+    const atCap = join(dir, 'AtCap.ttf');
+    writeFileSync(big, '');
+    truncateSync(big, 10485761);
+    writeFileSync(atCap, '');
+    truncateSync(atCap, 10485760);
+    const api = makeApi();
+
+    const results = await runChecks(api, [big, atCap], { timeoutMs: 60000 });
+
+    expect(api.uploadFont).toHaveBeenCalledTimes(1);
+    expect(api.uploadFont).toHaveBeenCalledWith(atCap);
+    expect(results[0]).toEqual({ file: big, ok: false, error: 'Larger than the 10 MB a CI key accepts \u2014 skipped', quota: true });
+    expect(results[1]).toMatchObject({ file: atCap, ok: true });
+    expect(decide(results, { failOn: 'error', failOnQuota: false }).failed).toBe(false);
+    expect(decide(results, { failOn: 'error', failOnQuota: true }).failed).toBe(true);
+  });
+
+  it('treats an upload 422 about the size limit like an oversized font and checks the next one', async () => {
+    const uploadFont = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new EfApiError("Everything Fonts API error (422): This font is 12 MB, above your plan's 10 MB limit.", { status: 422 }),
+      )
+      .mockResolvedValueOnce('f2');
+
+    const results = await runChecks(makeApi({ uploadFont }), ['a.ttf', 'b.ttf'], { timeoutMs: 60000 });
+
+    expect(results[0]).toEqual({ file: 'a.ttf', ok: false, error: 'Larger than the 10 MB a CI key accepts \u2014 skipped', quota: true });
+    expect(results[1]).toMatchObject({ file: 'b.ttf', ok: true });
   });
 
   it('stops on a quota error and records the remaining fonts as skipped: quota', async () => {

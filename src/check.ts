@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises';
 import { EfApiError, type Allowance, type EfApi, type Inspection } from './api';
 
 export type FontResult =
@@ -10,6 +11,10 @@ export interface DecideOptions {
   failOnQuota: boolean;
   timeoutMinutes?: number;
 }
+
+/** The largest font a CI key accepts (10 MB). */
+export const CI_KEY_MAX_UPLOAD_BYTES = 10485760;
+export const OVERSIZED_MESSAGE = 'Larger than the 10 MB a CI key accepts \u2014 skipped';
 
 const TIMED_OUT_WAITING = 'Timed out waiting for the result.';
 const RETRY_HINT = 'The Everything Fonts API is unavailable; try again in a few minutes.';
@@ -31,6 +36,19 @@ const isKeyRejected = (error: unknown): error is EfApiError =>
 const isPlainRateLimit = (error: unknown): error is EfApiError =>
   error instanceof EfApiError && error.status === 429 && !error.isQuota();
 
+/** An upload refused with 422 because the font is over the key's size limit. */
+const isSizeRefusal = (error: unknown): boolean =>
+  error instanceof EfApiError && error.status === 422 && /\blimit\b|too large|larger than|greater than/i.test(error.message);
+
+/** A missing or unreadable file is left to the upload, which reports it. */
+async function isOversized(file: string): Promise<boolean> {
+  try {
+    return (await stat(file)).size > CI_KEY_MAX_UPLOAD_BYTES;
+  } catch {
+    return false;
+  }
+}
+
 const isOutage = (error: unknown): error is EfApiError =>
   error instanceof EfApiError && (error.status === 0 || error.status >= 500);
 
@@ -49,6 +67,10 @@ export async function runChecks(
         results.push({ file: skipped, ok: false, error: 'Skipped: timed out before this font was checked.', skipped: 'timeout' });
       }
       return results;
+    }
+    if (await isOversized(file)) {
+      results.push({ file, ok: false, error: OVERSIZED_MESSAGE, quota: true });
+      continue;
     }
     try {
       const fontId = await api.uploadFont(file);
@@ -75,6 +97,10 @@ export async function runChecks(
       }
       if (isOutage(error)) {
         throw new Error(`${error.message} ${RETRY_HINT}`);
+      }
+      if (isSizeRefusal(error)) {
+        results.push({ file, ok: false, error: OVERSIZED_MESSAGE, quota: true });
+        continue;
       }
       const message =
         error instanceof Error && /^Timed out waiting for inspection/.test(error.message)
