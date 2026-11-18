@@ -136,7 +136,11 @@ describe('markdown safety', () => {
         report_url: 'javascript:alert(1)',
       },
     };
-    const md = markdownReport([hostile, { ...ok('b.ttf', 'healthy', 90), inspection: { ...ok('b.ttf', 'healthy', 90).inspection!, report_url: 'http://insecure.test/r' } } as never], {
+    const insecure = ok('b.ttf', 'healthy', 90);
+    if (insecure.ok) {
+      insecure.inspection.report_url = 'http://insecure.test/r';
+    }
+    const md = markdownReport([hostile, insecure], {
       failed: true,
       reasons: ['a|b`c\n@user.ttf: 1 error'],
     });
