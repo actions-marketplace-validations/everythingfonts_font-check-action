@@ -15,13 +15,14 @@ const json = (body: unknown, init: ResponseInit = {}): Response =>
 let fetchMock: ReturnType<typeof vi.fn>;
 let sleep: ReturnType<typeof vi.fn>;
 
-const makeApi = (repo: string | undefined = 'owner/repo'): EfApi =>
+const makeApi = (repo: string | undefined = 'owner/repo', extra: Partial<ConstructorParameters<typeof EfApi>[0]> = {}): EfApi =>
   new EfApi({
     baseUrl: 'https://font.rest/api/v1',
     apiKey: 'secret-key-123',
     client: 'github-action/font-check@1.0.0',
     repo,
     sleep: sleep as unknown as (ms: number) => Promise<void>,
+    ...extra,
   });
 
 beforeEach(() => {
@@ -200,10 +201,89 @@ describe('waitForInspection', () => {
     expect(result.status).toBe('failed');
   });
 
-  it('throws when the timeout passes', async () => {
-    fetchMock.mockImplementation(async () => state('pending'));
+  it('throws when the wall-clock deadline passes, clamping the last sleep', async () => {
+    let clock = 0;
+    sleep.mockImplementation(async (ms: number) => {
+      clock += ms;
+    });
+    fetchMock.mockImplementation(async () => {
+      clock += 1000;
+      return state('pending');
+    });
 
-    await expect(makeApi().waitForInspection('i1', { timeoutMs: 10000 })).rejects.toThrow(/timed out/i);
+    await expect(
+      makeApi('owner/repo', { now: () => clock }).waitForInspection('i1', { timeoutMs: 10000 }),
+    ).rejects.toThrow(/timed out/i);
+    expect(Math.max(...sleep.mock.calls.map((c) => c[0]))).toBeLessThanOrEqual(10000);
+    expect(clock).toBeLessThanOrEqual(10000 + 1000);
+  });
+
+  it('does not sleep through a Retry-After that passes the deadline', async () => {
+    let clock = 0;
+    fetchMock.mockResolvedValue(json({ message: 'Too Many' }, { status: 429, headers: { 'Retry-After': '30' } }));
+
+    await expect(
+      makeApi('owner/repo', { now: () => clock }).waitForInspection('i1', { timeoutMs: 10000 }),
+    ).rejects.toMatchObject({ status: 429 });
+    expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe('waits and failures', () => {
+  it('parses an HTTP-date Retry-After', async () => {
+    const now = Date.parse('2026-11-18T10:00:00Z');
+    fetchMock
+      .mockResolvedValueOnce(
+        json({ message: 'x' }, { status: 429, headers: { 'Retry-After': 'Wed, 18 Nov 2026 10:00:05 GMT' } }),
+      )
+      .mockResolvedValueOnce(json({ success: { total: 1 }, contents: { id: 'i1', status: 'pending' } }));
+
+    await makeApi('owner/repo', { now: () => now }).inspection('i1');
+
+    expect(sleep).toHaveBeenCalledWith(5000);
+  });
+
+  it('throws instead of sleeping when Retry-After is over 60 seconds', async () => {
+    fetchMock.mockResolvedValue(json({ message: 'x' }, { status: 429, headers: { 'Retry-After': '61' } }));
+
+    await expect(makeApi().inspection('i1')).rejects.toMatchObject({ status: 429 });
+    expect(sleep).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a network failure to status 0', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed secret-key-123'));
+
+    const error = (await makeApi().inspection('i1').catch((e: unknown) => e)) as EfApiError;
+
+    expect(error).toBeInstanceOf(EfApiError);
+    expect(error.status).toBe(0);
+    expect(error.message).not.toContain('secret-key-123');
+  });
+
+  it('passes an abort signal and maps a timeout to status 0', async () => {
+    fetchMock.mockRejectedValue(new DOMException('timed out', 'TimeoutError'));
+
+    const error = (await makeApi('owner/repo', { requestTimeoutMs: 5000 }).inspection('i1').catch((e: unknown) => e)) as EfApiError;
+
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+    expect(error.status).toBe(0);
+    expect(error.message).toMatch(/did not answer within 5 seconds/);
+  });
+
+  it('does not retry a 5xx', async () => {
+    fetchMock.mockResolvedValue(json({ error: { code: 500, message: 'boom' } }, { status: 500 }));
+
+    await expect(makeApi().inspection('i1')).rejects.toMatchObject({ status: 500 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('scrubs the api key from the stored body', async () => {
+    fetchMock.mockResolvedValue(json({ message: 'bad token secret-key-123' }, { status: 401 }));
+
+    const error = (await makeApi().inspection('i1').catch((e: unknown) => e)) as EfApiError;
+
+    expect(JSON.stringify(error.body)).not.toContain('secret-key-123');
   });
 });
 

@@ -32,6 +32,8 @@ export interface EfApiOptions {
   client: string;
   repo?: string;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  requestTimeoutMs?: number;
 }
 
 const QUOTA_TYPES = ['allowance_exhausted', 'upload_limit'];
@@ -39,6 +41,8 @@ const MAX_RATE_LIMIT_RETRIES = 5;
 const DEFAULT_RETRY_AFTER_SECONDS = 6;
 const POLL_START_MS = 2000;
 const POLL_CAP_MS = 15000;
+const MAX_WAIT_MS = 60000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 
 /** sha256 hex of `owner/repo`, so the plain repository name is never sent. */
 export function repoHash(repository: string): string {
@@ -107,6 +111,8 @@ export class EfApi {
   private readonly client: string;
   private readonly repo?: string;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly now: () => number;
+  private readonly requestTimeoutMs: number;
 
   constructor(opts: EfApiOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
@@ -114,6 +120,8 @@ export class EfApi {
     this.client = opts.client;
     this.repo = opts.repo;
     this.sleep = opts.sleep ?? defaultSleep;
+    this.now = opts.now ?? Date.now;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   async uploadFont(path: string): Promise<string> {
@@ -138,25 +146,29 @@ export class EfApi {
   }
 
   async inspection(id: string): Promise<Inspection> {
-    const { body } = await this.request('GET', `/inspections/${encodeURIComponent(id)}`);
-    return this.contents(body) as unknown as Inspection;
+    return this.fetchInspection(id);
   }
 
   async waitForInspection(id: string, opts: { timeoutMs: number }): Promise<Inspection> {
-    let elapsed = 0;
+    const deadline = this.now() + opts.timeoutMs;
     let delay = POLL_START_MS;
     for (;;) {
-      const inspection = await this.inspection(id);
+      const inspection = await this.fetchInspection(id, deadline);
       if (inspection.status === 'succeeded' || inspection.status === 'failed') {
         return inspection;
       }
-      if (elapsed >= opts.timeoutMs) {
+      const remaining = deadline - this.now();
+      if (remaining <= 0) {
         throw new Error(`Timed out waiting for inspection ${id} after ${Math.round(opts.timeoutMs / 1000)} seconds.`);
       }
-      await this.sleep(delay);
-      elapsed += delay;
+      await this.sleep(Math.min(delay, remaining));
       delay = Math.min(delay * 2, POLL_CAP_MS);
     }
+  }
+
+  private async fetchInspection(id: string, deadline?: number): Promise<Inspection> {
+    const { body } = await this.request('GET', `/inspections/${encodeURIComponent(id)}`, undefined, deadline);
+    return this.contents(body) as unknown as Inspection;
   }
 
   private contents(body: unknown): Record<string, unknown> {
@@ -182,18 +194,60 @@ export class EfApi {
     return this.apiKey ? text.split(this.apiKey).join('***') : text;
   }
 
+  private scrubBody(body: unknown): unknown {
+    if (typeof body === 'string') {
+      return this.scrub(body);
+    }
+    if (body === null || body === undefined) {
+      return body;
+    }
+    return JSON.parse(this.scrub(JSON.stringify(body)));
+  }
+
+  private retryDelayMs(headers: Headers): number {
+    const raw = headers.get('Retry-After');
+    if (raw === null || raw.trim() === '') {
+      return DEFAULT_RETRY_AFTER_SECONDS * 1000;
+    }
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds)) {
+      return seconds > 0 ? seconds * 1000 : DEFAULT_RETRY_AFTER_SECONDS * 1000;
+    }
+    const date = Date.parse(raw);
+    if (Number.isNaN(date)) {
+      return DEFAULT_RETRY_AFTER_SECONDS * 1000;
+    }
+    return Math.max(date - this.now(), 0);
+  }
+
   private async request(
     method: string,
     path: string,
     makeBody?: () => FormData,
+    deadline?: number,
   ): Promise<{ body: unknown; headers: Headers }> {
     for (let attempt = 0; ; attempt++) {
+      const timeoutMs =
+        deadline === undefined ? this.requestTimeoutMs : Math.max(1, Math.min(this.requestTimeoutMs, deadline - this.now()));
       let response: Response;
       try {
-        response = await fetch(`${this.baseUrl}${path}`, { method, headers: this.headers(), body: makeBody?.() });
+        response = await fetch(`${this.baseUrl}${path}`, {
+          method,
+          headers: this.headers(),
+          body: makeBody?.(),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        throw new EfApiError(this.scrub(`Could not reach the Everything Fonts API: ${reason}`), { status: 0 });
+        const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        throw new EfApiError(
+          this.scrub(
+            timedOut
+              ? `The Everything Fonts API did not answer within ${Math.round(timeoutMs / 1000)} seconds.`
+              : `Could not reach the Everything Fonts API: ${reason}`,
+          ),
+          { status: 0 },
+        );
       }
 
       const text = await response.text();
@@ -209,26 +263,29 @@ export class EfApi {
       }
 
       const error = isRecord(body) && isRecord(body.error) ? body.error : undefined;
-      const type = typeof error?.type === 'string' ? error.type : undefined;
-      const isQuota = response.status === 429 && type !== undefined && QUOTA_TYPES.includes(type);
-
-      if (response.status === 429 && !isQuota && attempt < MAX_RATE_LIMIT_RETRIES) {
-        const retryAfter = Number(response.headers.get('Retry-After'));
-        const seconds = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : DEFAULT_RETRY_AFTER_SECONDS;
-        await this.sleep(seconds * 1000);
-        continue;
-      }
-
       const message =
         (typeof error?.message === 'string' && error.message) ||
         (isRecord(body) && typeof body.message === 'string' && body.message) ||
         `HTTP ${response.status}`;
-      throw new EfApiError(this.scrub(`Everything Fonts API error (${response.status}): ${message}`), {
+      const apiError = new EfApiError(this.scrub(`Everything Fonts API error (${response.status}): ${message}`), {
         status: response.status,
-        type,
+        type: typeof error?.type === 'string' ? error.type : undefined,
         allowance: allowanceFromBody(body) ?? allowanceFromHeaders(response.headers),
-        body,
+        body: this.scrubBody(body),
       });
+
+      if (response.status !== 429 || apiError.isQuota() || attempt >= MAX_RATE_LIMIT_RETRIES) {
+        throw apiError;
+      }
+
+      const waitMs = this.retryDelayMs(response.headers);
+      if (waitMs > MAX_WAIT_MS || (deadline !== undefined && this.now() + waitMs >= deadline)) {
+        throw new EfApiError(
+          this.scrub(`Everything Fonts API is rate limiting this key; try again in ${Math.ceil(waitMs / 1000)} seconds.`),
+          { status: 429, body: apiError.body },
+        );
+      }
+      await this.sleep(waitMs);
     }
   }
 }
