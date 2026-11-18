@@ -271,6 +271,21 @@ describe('waits and failures', () => {
     expect(error.message).toMatch(/did not answer within 5 seconds/);
   });
 
+  it('gives uploadFont its own longer timeout; other calls keep 30 seconds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ef-'));
+    const file = join(dir, 'A.ttf');
+    writeFileSync(file, 'x');
+    fetchMock.mockRejectedValue(new DOMException('timed out', 'TimeoutError'));
+
+    const upload = (await makeApi().uploadFont(file).catch((e: unknown) => e)) as EfApiError;
+    const custom = (await makeApi('owner/repo', { uploadTimeoutMs: 90000 }).uploadFont(file).catch((e: unknown) => e)) as EfApiError;
+    const other = (await makeApi().inspection('i1').catch((e: unknown) => e)) as EfApiError;
+
+    expect(upload.message).toMatch(/within 300 seconds/);
+    expect(custom.message).toMatch(/within 90 seconds/);
+    expect(other.message).toMatch(/within 30 seconds/);
+  });
+
   it('does not retry a 5xx', async () => {
     fetchMock.mockResolvedValue(json({ error: { code: 500, message: 'boom' } }, { status: 500 }));
 

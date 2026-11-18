@@ -34,6 +34,7 @@ export interface EfApiOptions {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   requestTimeoutMs?: number;
+  uploadTimeoutMs?: number;
 }
 
 const QUOTA_TYPES = ['allowance_exhausted', 'upload_limit'];
@@ -43,6 +44,7 @@ const POLL_START_MS = 2000;
 const POLL_CAP_MS = 15000;
 const MAX_WAIT_MS = 60000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+const DEFAULT_UPLOAD_TIMEOUT_MS = 300000;
 
 /** sha256 hex of `owner/repo`, so the plain repository name is never sent. */
 export function repoHash(repository: string): string {
@@ -113,6 +115,7 @@ export class EfApi {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private readonly requestTimeoutMs: number;
+  private readonly uploadTimeoutMs: number;
 
   constructor(opts: EfApiOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
@@ -122,6 +125,7 @@ export class EfApi {
     this.sleep = opts.sleep ?? defaultSleep;
     this.now = opts.now ?? Date.now;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.uploadTimeoutMs = opts.uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS;
   }
 
   async uploadFont(path: string): Promise<string> {
@@ -131,7 +135,7 @@ export class EfApi {
       form.append('font', new Blob([new Uint8Array(bytes)]), basename(path));
       return form;
     };
-    const { body } = await this.request('POST', '/font', buildForm);
+    const { body } = await this.request('POST', '/font', buildForm, undefined, this.uploadTimeoutMs);
     return String(this.contents(body).id);
   }
 
@@ -225,10 +229,11 @@ export class EfApi {
     path: string,
     makeBody?: () => FormData,
     deadline?: number,
+    perRequestMs: number = this.requestTimeoutMs,
   ): Promise<{ body: unknown; headers: Headers }> {
     for (let attempt = 0; ; attempt++) {
       const timeoutMs =
-        deadline === undefined ? this.requestTimeoutMs : Math.max(1, Math.min(this.requestTimeoutMs, deadline - this.now()));
+        deadline === undefined ? perRequestMs : Math.max(1, Math.min(perRequestMs, deadline - this.now()));
       let response: Response;
       try {
         response = await fetch(`${this.baseUrl}${path}`, {

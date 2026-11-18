@@ -32,6 +32,10 @@ inputs:
     description: Fail the job when the API allowance is used up (otherwise it is a warning).
     required: false
     default: 'false'
+  github-token:
+    description: Token used to list the files changed in a pull request.
+    required: false
+    default: ${{ github.token }}
   api-url:
     description: Base URL of the Everything Fonts API.
     required: false
