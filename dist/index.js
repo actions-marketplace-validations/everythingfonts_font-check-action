@@ -41977,6 +41977,8 @@ function annotate(results) {
 }
 
 ;// CONCATENATED MODULE: ./src/inputs.ts
+/** The default `paths`: every font, except those inside node_modules. */
+const DEFAULT_PATHS = '**/*.{ttf,otf,woff,woff2}\n!**/node_modules/**';
 /** An explicit 'true'/'false' wins; empty falls back to `fallback`. */
 function resolveToggle(name, value, fallback) {
     const normalized = value.trim().toLowerCase();
@@ -42110,7 +42112,7 @@ async function run() {
             onlyChanged = false;
         }
     }
-    const files = await findFonts({ patterns: getInput('paths'), changedOnly: onlyChanged, changedFiles });
+    const files = await findFonts({ patterns: getInput('paths') || DEFAULT_PATHS, changedOnly: onlyChanged, changedFiles });
     if (files.length === 0) {
         info('No fonts to check');
         setOutput('results', '[]');

@@ -1,3 +1,6 @@
+/** The default `paths`: every font, except those inside node_modules. */
+export const DEFAULT_PATHS = '**/*.{ttf,otf,woff,woff2}\n!**/node_modules/**';
+
 export type FailOn = 'error' | 'warning' | 'none';
 
 /** An explicit 'true'/'false' wins; empty falls back to `fallback`. */

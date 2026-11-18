@@ -8,6 +8,7 @@ import { decide, runChecks, type FontResult } from './check';
 import { findFonts } from './fonts';
 import { annotate, markdownReport, summarize, upsertComment } from './report';
 import {
+  DEFAULT_PATHS,
   isPullRequestEvent,
   parseApiUrl,
   parseFailBelow,
@@ -85,7 +86,7 @@ export async function run(): Promise<void> {
       onlyChanged = false;
     }
   }
-  const files = await findFonts({ patterns: core.getInput('paths'), changedOnly: onlyChanged, changedFiles });
+  const files = await findFonts({ patterns: core.getInput('paths') || DEFAULT_PATHS, changedOnly: onlyChanged, changedFiles });
   if (files.length === 0) {
     core.info('No fonts to check');
     core.setOutput('results', '[]');

@@ -138,6 +138,14 @@ describe('run', () => {
     expect(markdown).not.toContain('*glyf*');
   });
 
+  it('uses the default paths when the input is empty', async () => {
+    Object.assign(github.context, { eventName: 'push', payload: {} });
+    setInputs({ 'api-key': 'k' });
+    await run();
+
+    expect(findFonts).toHaveBeenCalledWith(expect.objectContaining({ patterns: '**/*.{ttf,otf,woff,woff2}\n!**/node_modules/**' }));
+  });
+
   it('falls back to the default api-url when the input is empty', async () => {
     Object.assign(github.context, { eventName: 'push', payload: {} });
     setInputs({ 'api-key': 'k' });

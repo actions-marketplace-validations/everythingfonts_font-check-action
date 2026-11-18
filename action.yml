@@ -11,7 +11,9 @@ inputs:
   paths:
     description: Glob patterns (one per line or comma-separated) of the font files to check.
     required: false
-    default: '**/*.{ttf,otf,woff,woff2}'
+    default: |-
+      **/*.{ttf,otf,woff,woff2}
+      !**/node_modules/**
   changed-only:
     description: Check only fonts changed in the pull request. Defaults to true on pull_request events, otherwise false.
     required: false

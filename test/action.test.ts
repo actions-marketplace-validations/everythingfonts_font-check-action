@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_PATHS } from '../src/inputs';
 
 const root = join(__dirname, '..');
 
@@ -30,6 +31,7 @@ describe('action.yml', () => {
       'timeout-minutes',
     ]);
     expect(Object.keys(action.outputs as object)).toEqual(['results', 'failed']);
+    expect((action.inputs as Record<string, { default?: string }>).paths!.default).toBe(DEFAULT_PATHS);
     expect(action.runs).toEqual({ using: 'node24', main: 'dist/index.js' });
   });
 

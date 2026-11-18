@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { expandBraces, findFonts, splitPatterns } from '../src/fonts';
+import { DEFAULT_PATHS } from '../src/inputs';
 
 let root: string;
 
@@ -55,5 +56,18 @@ describe('findFonts', () => {
 
   it('returns nothing when changedOnly is set without changed files', async () => {
     expect(await findFonts({ patterns: `${root}/**/*.ttf`, changedOnly: true, workspace: root })).toEqual([]);
+  });
+
+  it('the default paths skip fonts inside node_modules', async () => {
+    mkdirSync(join(root, 'node_modules', 'pkg', 'fonts'), { recursive: true });
+    writeFileSync(join(root, 'node_modules', 'pkg', 'fonts', 'Dep.woff2'), 'x');
+    const anchored = splitPatterns(DEFAULT_PATHS)
+      .map((pattern) => (pattern.startsWith('!') ? `!${root}/${pattern.slice(1)}` : `${root}/${pattern}`))
+      .join('\n');
+
+    const files = await findFonts({ patterns: anchored, changedOnly: false });
+
+    expect(DEFAULT_PATHS).toBe('**/*.{ttf,otf,woff,woff2}\n!**/node_modules/**');
+    expect(files).toEqual([join(root, 'fonts', 'A.ttf'), join(root, 'fonts', 'B.woff2'), join(root, 'other', 'C.ttf')]);
   });
 });
