@@ -24,6 +24,8 @@ export interface Inspection {
   counts?: { error: number; warning: number; info: number; pass: number };
   findings?: Finding[];
   report_url?: string;
+  /** The server's reason, present only when `status` is `failed`. */
+  error?: string | null;
 }
 
 export interface EfApiOptions {

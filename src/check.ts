@@ -52,6 +52,14 @@ async function isOversized(file: string): Promise<boolean> {
 const isOutage = (error: unknown): error is EfApiError =>
   error instanceof EfApiError && (error.status === 0 || error.status >= 500);
 
+const MAX_SERVER_ERROR_CHARS = 300;
+
+/** The API's reason for a failed inspection, when it gave one; the report escapes it with safeText. */
+function failedInspectionMessage(inspection: Inspection): string {
+  const reason = typeof inspection.error === 'string' ? inspection.error.trim().slice(0, MAX_SERVER_ERROR_CHARS) : '';
+  return reason === '' ? 'The inspection failed on the server.' : `The inspection failed on the server: ${reason}`;
+}
+
 /** Checks the fonts one at a time; a quota error skips the rest, an outage throws. */
 export async function runChecks(
   api: EfApi,
@@ -86,7 +94,7 @@ export async function runChecks(
       if (inspection.status === 'succeeded') {
         results.push({ file, ok: true, inspection });
       } else {
-        results.push({ file, ok: false, error: 'The inspection failed on the server.' });
+        results.push({ file, ok: false, error: failedInspectionMessage(inspection) });
       }
     } catch (error) {
       if (isKeyRejected(error)) {

@@ -96,7 +96,15 @@ describe('runChecks', () => {
 
     const results = await runChecks(makeApi({ waitForInspection }), ['a.ttf'], { timeoutMs: 60000 });
 
-    expect(results[0]).toMatchObject({ ok: false });
+    expect(results[0]).toEqual({ file: 'a.ttf', ok: false, error: 'The inspection failed on the server.' });
+  });
+
+  it("includes the API's error string in a failed inspection", async () => {
+    const waitForInspection = vi.fn(async () => ({ id: 'i', status: 'failed', error: '  The font has no cmap table.  ' }));
+
+    const results = await runChecks(makeApi({ waitForInspection }), ['a.ttf'], { timeoutMs: 60000 });
+
+    expect(results[0]).toEqual({ file: 'a.ttf', ok: false, error: 'The inspection failed on the server: The font has no cmap table.' });
   });
 
   it.each([

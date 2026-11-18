@@ -33,6 +33,7 @@ vi.mock('../src/api', async (importOriginal) => ({
 vi.mock('../src/fonts', () => ({ findFonts: vi.fn(async () => ['/ws/a.ttf', '/ws/b.ttf']) }));
 
 import { findFonts } from '../src/fonts';
+import { safeText } from '../src/report';
 import { handleFailure, run } from '../src/run';
 
 const setInputs = (inputs: Record<string, string>): void => {
@@ -124,6 +125,17 @@ describe('run', () => {
     expect(findFonts).toHaveBeenCalledWith(expect.objectContaining({ changedOnly: false }));
     expect(apiMock.uploadFont).toHaveBeenCalledTimes(2);
     expect(core.setFailed).not.toHaveBeenCalled();
+  });
+
+  it("shows a failed inspection's API error in the summary through safeText", async () => {
+    Object.assign(github.context, { eventName: 'push', payload: {} });
+    setInputs({ 'api-key': 'k', 'api-url': 'https://x', 'fail-on': 'none' });
+    apiMock.waitForInspection.mockResolvedValueOnce({ id: 'i', status: 'failed', error: 'Broken *glyf* table, ask @team' });
+    await run();
+
+    const markdown = vi.mocked(core.summary.addRaw).mock.calls[0]![0] as string;
+    expect(markdown).toContain(safeText('The inspection failed on the server: Broken *glyf* table, ask @team'));
+    expect(markdown).not.toContain('*glyf*');
   });
 
   it('falls back to the default api-url when the input is empty', async () => {
