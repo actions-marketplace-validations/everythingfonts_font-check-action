@@ -1,0 +1,50 @@
+name: Everything Fonts Font Check
+description: Health-check your fonts on every pull request with Everything Fonts.
+author: Everything Fonts
+branding:
+  icon: type
+  color: blue
+inputs:
+  api-key:
+    description: Everything Fonts API key (store it as a repository secret).
+    required: true
+  paths:
+    description: Glob patterns (one per line or comma-separated) of the font files to check.
+    required: false
+    default: '**/*.{ttf,otf,woff,woff2}'
+  changed-only:
+    description: Check only fonts changed in the pull request. Defaults to true on pull_request events, otherwise false.
+    required: false
+    default: ''
+  fail-below:
+    description: Fail the job when a font's score is below this number (0-100). Off when empty.
+    required: false
+    default: ''
+  fail-on:
+    description: Fail the job on findings of this severity or worse. One of error, warning, none.
+    required: false
+    default: error
+  comment:
+    description: Post the results as a pull request comment. Defaults to true on pull_request events.
+    required: false
+    default: ''
+  fail-on-quota:
+    description: Fail the job when the API allowance is used up (otherwise it is a warning).
+    required: false
+    default: 'false'
+  api-url:
+    description: Base URL of the Everything Fonts API.
+    required: false
+    default: https://font.rest/api/v1
+  timeout-minutes:
+    description: Overall time to wait for inspections to finish.
+    required: false
+    default: '10'
+outputs:
+  results:
+    description: JSON array with one result per checked font.
+  failed:
+    description: 'true when the check failed, otherwise false.'
+runs:
+  using: node24
+  main: dist/index.js
