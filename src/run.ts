@@ -7,7 +7,14 @@ import type { Allowance } from './api';
 import { decide, runChecks, type FontResult } from './check';
 import { findFonts } from './fonts';
 import { annotate, markdownReport, summarize, upsertComment } from './report';
-import { isPullRequestEvent, parseFailBelow, parseFailOn, parseTimeoutMinutes, resolveToggle } from './inputs';
+import {
+  isPullRequestEvent,
+  parseApiUrl,
+  parseFailBelow,
+  parseFailOn,
+  parseTimeoutMinutes,
+  resolveToggle,
+} from './inputs';
 
 async function changedFilesInPullRequest(token: string): Promise<string[]> {
   const pullNumber = github.context.payload.pull_request?.number;
@@ -49,6 +56,7 @@ export async function run(): Promise<void> {
     return;
   }
   core.setSecret(apiKey);
+  const apiUrl = parseApiUrl(core.getInput('api-url'));
 
   const isPullRequest = isPullRequestEvent(github.context.eventName);
   const changedOnly = resolveToggle('changed-only', core.getInput('changed-only'), isPullRequest);
@@ -70,7 +78,7 @@ export async function run(): Promise<void> {
   }
 
   const api = new EfApi({
-    baseUrl: core.getInput('api-url'),
+    baseUrl: apiUrl,
     apiKey,
     client: `github-action/font-check@${pkg.version}`,
     repo: process.env.GITHUB_REPOSITORY,

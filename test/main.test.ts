@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { EfApiError } from '../src/api';
+import { EfApi, EfApiError } from '../src/api';
 
 vi.mock('@actions/core', () => {
   const summary = { addRaw: vi.fn(() => summary), write: vi.fn(async () => summary) };
@@ -104,6 +104,25 @@ describe('run', () => {
     setInputs({ 'api-key': 'k', 'changed-only': 'false', comment: 'false', 'github-token': 't', 'api-url': 'https://x' });
     await run();
     expect(createComment).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the default api-url when the input is empty', async () => {
+    Object.assign(github.context, { eventName: 'push', payload: {} });
+    setInputs({ 'api-key': 'k' });
+    await run();
+
+    expect(vi.mocked(EfApi).mock.calls[0]![0]).toMatchObject({ baseUrl: 'https://font.rest/api/v1' });
+  });
+
+  it('refuses a plain-http api-url before any request', async () => {
+    Object.assign(github.context, { eventName: 'pull_request', payload: { pull_request: { number: 5 } } });
+    setInputs({ 'api-key': 'k', 'api-url': 'http://example.com/api/v1', 'github-token': 't' });
+    const error = (await run().catch((e: unknown) => e)) as Error;
+
+    expect(error.message).toContain('Input api-url must be an https URL');
+    expect(EfApi).not.toHaveBeenCalled();
+    expect(github.getOctokit).not.toHaveBeenCalled();
+    expect(apiMock.uploadFont).not.toHaveBeenCalled();
   });
 
   it('sets empty results and failed=true when the run throws', async () => {

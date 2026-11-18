@@ -42008,6 +42008,27 @@ function parseTimeoutMinutes(value) {
     }
     return minutes;
 }
+const DEFAULT_API_URL = 'https://font.rest/api/v1';
+const LOCAL_HOSTS = ['localhost', '127.0.0.1'];
+/** Empty falls back to the default; only https is accepted, or http to localhost / 127.0.0.1. */
+function parseApiUrl(value) {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+        return DEFAULT_API_URL;
+    }
+    let url;
+    try {
+        url = new URL(trimmed);
+    }
+    catch {
+        url = undefined;
+    }
+    const allowed = url !== undefined && (url.protocol === 'https:' || (url.protocol === 'http:' && LOCAL_HOSTS.includes(url.hostname)));
+    if (!allowed) {
+        throw new Error(`Input api-url must be an https URL (http is allowed only for localhost and 127.0.0.1), got "${value}".`);
+    }
+    return trimmed;
+}
 
 ;// CONCATENATED MODULE: ./src/run.ts
 
@@ -42055,6 +42076,7 @@ async function run() {
         return;
     }
     setSecret(apiKey);
+    const apiUrl = parseApiUrl(getInput('api-url'));
     const isPullRequest = isPullRequestEvent(github_context.eventName);
     const changedOnly = resolveToggle('changed-only', getInput('changed-only'), isPullRequest);
     const comment = resolveToggle('comment', getInput('comment'), isPullRequest);
@@ -42073,7 +42095,7 @@ async function run() {
         return;
     }
     const api = new EfApi({
-        baseUrl: getInput('api-url'),
+        baseUrl: apiUrl,
         apiKey,
         client: `github-action/font-check@${package_namespaceObject.rE}`,
         repo: process.env.GITHUB_REPOSITORY,
