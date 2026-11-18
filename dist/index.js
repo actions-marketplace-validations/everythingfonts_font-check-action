@@ -41765,6 +41765,7 @@ const BAND_EMOJI = {
 };
 const TOP_FINDINGS = 5;
 const MAX_BODY_CHARS = 60000;
+const MAX_REASONS = 20;
 const MAX_ANNOTATIONS_PER_SEVERITY = 10;
 /** Escapes markdown, neutralises @mentions and collapses newlines. */
 function safeText(text) {
@@ -41817,8 +41818,11 @@ function reportLink(url, reportBase) {
 function renderReport(results, decision, options, hidden) {
     const lines = [COMMENT_MARKER, '## Font Check', ''];
     lines.push(decision.failed ? '**Result: failed**' : '**Result: passed**', '');
-    for (const reason of decision.reasons) {
+    for (const reason of decision.reasons.slice(0, MAX_REASONS)) {
         lines.push(`- ${safeText(reason)}`);
+    }
+    if (decision.reasons.length > MAX_REASONS) {
+        lines.push(`- \u2026 and ${decision.reasons.length - MAX_REASONS} more \u2014 see the job log`);
     }
     if (decision.reasons.length > 0) {
         lines.push('');

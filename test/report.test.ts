@@ -112,6 +112,14 @@ describe('upsertComment', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.not.stringContaining('secret detail'));
   });
 
+  it('warns instead of throwing when updating fails', async () => {
+    const { octokit, updateComment } = makeOctokit([[bot(2, COMMENT_MARKER)]]);
+    updateComment.mockRejectedValueOnce(Object.assign(new Error('nope'), { status: 500 }));
+
+    await expect(upsertComment(octokit, target, 'new')).resolves.toBeUndefined();
+    expect(core.warning).toHaveBeenCalled();
+  });
+
   it('warns when listing fails', async () => {
     const { octokit, listComments } = makeOctokit([]);
     listComments.mockRejectedValueOnce(new Error('boom'));
@@ -169,6 +177,21 @@ describe('markdown safety', () => {
     expect(md).toMatch(/… \d+ more fonts not shown — see the job log/);
     expect(md).toContain('everythingfonts.com');
     expect(md.endsWith('\n')).toBe(true);
+  });
+});
+
+describe('reason cap', () => {
+  it('trims reasons and fonts so 3000 failures stay under the cap', () => {
+    const many: FontResult[] = Array.from({ length: 3000 }, (_, i) => ({ file: `font-${i}.ttf`, ok: false, error: 'bad file' }));
+    const reasons = many.map((r) => `${r.file}: bad file`);
+    const md = markdownReport(many, { failed: true, reasons });
+
+    expect(md.length).toBeLessThanOrEqual(60000);
+    expect(md).toContain(COMMENT_MARKER);
+    expect(md).toContain('everythingfonts.com');
+    expect(md).toContain('\u2026 and 2980 more \u2014 see the job log');
+    expect(md).toMatch(/\u2026 \d+ more fonts not shown \u2014 see the job log/);
+    expect(md.split('\n').filter((l) => l.startsWith('- font-')).length).toBe(20);
   });
 });
 
