@@ -1,6 +1,12 @@
 # Everything Fonts Font Check
 
-A GitHub Action that checks the fonts in your repository with [Everything Fonts](https://everythingfonts.com) Font Health. Each font gets a score, a band (healthy, needs attention, unhealthy), counts of errors, warnings and notes, and a link to the full report. Results go to the job summary, to annotations and, on pull requests, to one comment that is updated on each run.
+A GitHub Action that checks the fonts in your repository with [Everything Fonts](https://everythingfonts.com), running the same health checks as the [Font Inspector](https://everythingfonts.com/font-inspector). Each font gets a score, a band (healthy, needs attention, unhealthy), counts of errors, warnings and notes, and a link to the full report. Results go to the job summary, to annotations and, on pull requests, to one comment that is updated on each run.
+
+## When a font needs fixing
+
+The report link opens the full findings on Everything Fonts. To repair a font, upload it to [Font Doctor](https://everythingfonts.com/font-doctor): it fixes the problems it can and gives you back a corrected TTF or OTF plus a WOFF2. To check and repair fonts from your own code, see the [font health API](https://everythingfonts.com/api/font-health).
+
+To build web fonts from the same files in CI, see [Web Font Build](https://github.com/everythingfonts/webfont-build-action).
 
 ## Get a free CI key
 
