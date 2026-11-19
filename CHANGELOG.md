@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0 - unreleased
+## 1.0.0 - 2026-11-18
 
 - First release.
 - Checks fonts (`.ttf`, `.otf`, `.woff`, `.woff2`) with Everything Fonts Font Health.
